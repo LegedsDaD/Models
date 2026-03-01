@@ -1,6 +1,5 @@
 import streamlit as st
 import sqlite3
-import os
 import requests
 import base64
 import datetime
@@ -19,8 +18,11 @@ st.set_page_config(
 st.markdown("""
 <style>
 body {background: linear-gradient(135deg,#0f0f0f,#1a1a1a); color:white;}
-.stButton>button {background:#ff4b2b;color:white;border-radius:10px;}
-.block-container {padding-top:2rem;}
+.stButton>button {
+    background:#ff4b2b;
+    color:white;
+    border-radius:10px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -85,7 +87,7 @@ def upload_to_github(file, filename):
 
 def trending_score(likes, views, created_at):
     age_hours = (
-        datetime.datetime.now() - 
+        datetime.datetime.now() -
         datetime.datetime.fromisoformat(created_at)
     ).total_seconds() / 3600
     return (likes * 3 + views) / (age_hours + 2)
@@ -101,11 +103,10 @@ def show_3d_model(url):
         <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
         <script src="https://cdn.jsdelivr.net/npm/three@0.128/examples/js/loaders/OBJLoader.js"></script>
         <script src="https://cdn.jsdelivr.net/npm/three@0.128/examples/js/controls/OrbitControls.js"></script>
-
         <script>
             const scene = new THREE.Scene();
             const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-            const renderer = new THREE.WebGLRenderer();
+            const renderer = new THREE.WebGLRenderer({{antialias:true}});
             renderer.setSize(window.innerWidth, 500);
             document.body.appendChild(renderer.domElement);
 
@@ -143,47 +144,60 @@ if "user" not in st.session_state:
 # AUTH
 # ===============================
 if not st.session_state.user:
+
     tab1, tab2 = st.tabs(["Login", "Register"])
 
+    # LOGIN
     with tab1:
         st.subheader("Login")
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
+        login_username = st.text_input("Username", key="login_username")
+        login_password = st.text_input("Password", type="password", key="login_password")
 
-        if st.button("Login"):
-            c.execute("SELECT * FROM users WHERE username=? AND password=?",
-                      (username, hash_password(password)))
+        if st.button("Login", key="login_button"):
+            c.execute(
+                "SELECT * FROM users WHERE username=? AND password=?",
+                (login_username, hash_password(login_password))
+            )
             user = c.fetchone()
+
             if user:
-                st.session_state.user = username
+                st.session_state.user = login_username
                 st.success("Logged in!")
                 st.rerun()
             else:
                 st.error("Invalid credentials")
 
+    # REGISTER
     with tab2:
         st.subheader("Register")
-        new_user = st.text_input("Username")
-        new_email = st.text_input("Email")
-        new_pass = st.text_input("Password", type="password")
+        register_username = st.text_input("Username", key="register_username")
+        register_email = st.text_input("Email", key="register_email")
+        register_password = st.text_input("Password", type="password", key="register_password")
 
-        if st.button("Register"):
+        if st.button("Register", key="register_button"):
             try:
-                c.execute("INSERT INTO users(username,email,password) VALUES(?,?,?)",
-                          (new_user, new_email, hash_password(new_pass)))
+                c.execute(
+                    "INSERT INTO users(username,email,password) VALUES(?,?,?)",
+                    (register_username, register_email, hash_password(register_password))
+                )
                 conn.commit()
                 st.success("Account created! Login now.")
             except:
                 st.error("Username or email already exists")
 
+# ===============================
+# MAIN APP
+# ===============================
 else:
-    st.sidebar.title(f"👋 {st.session_state.user}")
-    page = st.sidebar.radio("Navigation", 
-                            ["Explore", "Upload", "Leaderboard", "Logout"])
 
-    # ===============================
-    # EXPLORE
-    # ===============================
+    st.sidebar.title(f"👋 {st.session_state.user}")
+    page = st.sidebar.radio("Navigation",
+                            ["Explore", "Upload", "Leaderboard", "Logout"],
+                            key="nav_radio")
+
+    repo = st.secrets["GITHUB_REPO"]
+
+    # ---------------- EXPLORE ----------------
     if page == "Explore":
         st.title("🔥 Trending Models")
 
@@ -195,8 +209,6 @@ else:
             key=lambda x: trending_score(x[6], x[7], x[8]),
             reverse=True
         )
-
-        repo = st.secrets["GITHUB_REPO"]
 
         for model in models:
             st.markdown("---")
@@ -210,7 +222,7 @@ else:
             col1, col2 = st.columns(2)
 
             with col1:
-                if st.button(f"❤️ Like {model[0]}"):
+                if st.button("❤️ Like", key=f"like_{model[0]}"):
                     c.execute("UPDATE models SET likes = likes + 1 WHERE id=?",
                               (model[0],))
                     conn.commit()
@@ -223,18 +235,16 @@ else:
                       (model[0],))
             conn.commit()
 
-    # ===============================
-    # UPLOAD
-    # ===============================
+    # ---------------- UPLOAD ----------------
     elif page == "Upload":
         st.title("🚀 Upload 3D Model (.obj only)")
 
-        title = st.text_input("Model Title")
-        prompt = st.text_area("Prompt Used")
-        description = st.text_area("Description")
-        uploaded_file = st.file_uploader("Upload OBJ file", type=["obj"])
+        title = st.text_input("Model Title", key="upload_title")
+        prompt = st.text_area("Prompt Used", key="upload_prompt")
+        description = st.text_area("Description", key="upload_description")
+        uploaded_file = st.file_uploader("Upload OBJ file", type=["obj"], key="upload_file")
 
-        if st.button("Submit"):
+        if st.button("Submit", key="upload_submit"):
             if uploaded_file:
                 success = upload_to_github(uploaded_file, uploaded_file.name)
 
@@ -257,9 +267,7 @@ else:
                 else:
                     st.error("GitHub upload failed")
 
-    # ===============================
-    # LEADERBOARD
-    # ===============================
+    # ---------------- LEADERBOARD ----------------
     elif page == "Leaderboard":
         st.title("🏆 Top Creators")
 
@@ -276,9 +284,7 @@ else:
         for i, leader in enumerate(leaders):
             st.write(f"{i+1}. {leader[0]} — ❤️ {leader[1] or 0}")
 
-    # ===============================
-    # LOGOUT
-    # ===============================
+    # ---------------- LOGOUT ----------------
     elif page == "Logout":
         st.session_state.user = None
         st.rerun()
