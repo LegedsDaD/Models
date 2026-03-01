@@ -1,267 +1,284 @@
 import streamlit as st
 import sqlite3
 import os
-from datetime import datetime
-import hashlib
+import requests
 import base64
+import datetime
+import hashlib
+import streamlit.components.v1 as components
 
-# =========================
+# ===============================
 # CONFIG
-# =========================
-st.set_page_config(page_title="ThreeDimensions Hub", layout="wide")
+# ===============================
+st.set_page_config(
+    page_title="threedimensions Hub",
+    page_icon="🔥",
+    layout="wide"
+)
 
-BASE_DIR = "/tmp"
-MODEL_DIR = os.path.join(BASE_DIR, "models")
-DB_FILE = os.path.join(BASE_DIR, "database.db")
+st.markdown("""
+<style>
+body {background: linear-gradient(135deg,#0f0f0f,#1a1a1a); color:white;}
+.stButton>button {background:#ff4b2b;color:white;border-radius:10px;}
+.block-container {padding-top:2rem;}
+</style>
+""", unsafe_allow_html=True)
 
-os.makedirs(MODEL_DIR, exist_ok=True)
-
-# =========================
+# ===============================
 # DATABASE
-# =========================
-@st.cache_resource
-def get_connection():
-    return sqlite3.connect(DB_FILE, check_same_thread=False)
-
-conn = get_connection()
+# ===============================
+conn = sqlite3.connect("database.db", check_same_thread=False)
 c = conn.cursor()
 
-# Users
 c.execute("""
-CREATE TABLE IF NOT EXISTS users (
+CREATE TABLE IF NOT EXISTS users(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE,
     email TEXT UNIQUE,
     password TEXT
 )
 """)
 
-# Models
 c.execute("""
-CREATE TABLE IF NOT EXISTS models (
+CREATE TABLE IF NOT EXISTS models(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT,
     title TEXT,
     prompt TEXT,
     description TEXT,
     filename TEXT,
-    user_id INTEGER,
+    likes INTEGER DEFAULT 0,
+    views INTEGER DEFAULT 0,
     created_at TEXT
-)
-""")
-
-# Likes
-c.execute("""
-CREATE TABLE IF NOT EXISTS likes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    model_id INTEGER,
-    user_id INTEGER
-)
-""")
-
-# Ratings
-c.execute("""
-CREATE TABLE IF NOT EXISTS ratings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    model_id INTEGER,
-    user_id INTEGER,
-    rating INTEGER
 )
 """)
 
 conn.commit()
 
-# =========================
-# SESSION
-# =========================
-if "user" not in st.session_state:
-    st.session_state.user = None
-
-# =========================
-# AUTH SYSTEM
-# =========================
-st.sidebar.title("Account")
+# ===============================
+# UTILITIES
+# ===============================
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
+def upload_to_github(file, filename):
+    token = st.secrets["GITHUB_TOKEN"]
+    repo = st.secrets["GITHUB_REPO"]
+
+    content = base64.b64encode(file.getvalue()).decode()
+
+    url = f"https://api.github.com/repos/{repo}/contents/models/{filename}"
+
+    data = {
+        "message": f"Upload model {filename}",
+        "content": content
+    }
+
+    response = requests.put(
+        url,
+        headers={"Authorization": f"token {token}"},
+        json=data
+    )
+
+    return response.status_code in [200, 201]
+
+def trending_score(likes, views, created_at):
+    age_hours = (
+        datetime.datetime.now() - 
+        datetime.datetime.fromisoformat(created_at)
+    ).total_seconds() / 3600
+    return (likes * 3 + views) / (age_hours + 2)
+
+def show_3d_model(url):
+    components.html(f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>body{{margin:0;overflow:hidden}}</style>
+    </head>
+    <body>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/three@0.128/examples/js/loaders/OBJLoader.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/three@0.128/examples/js/controls/OrbitControls.js"></script>
+
+        <script>
+            const scene = new THREE.Scene();
+            const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+            const renderer = new THREE.WebGLRenderer();
+            renderer.setSize(window.innerWidth, 500);
+            document.body.appendChild(renderer.domElement);
+
+            const controls = new THREE.OrbitControls(camera, renderer.domElement);
+
+            const light = new THREE.DirectionalLight(0xffffff, 1);
+            light.position.set(0, 1, 1).normalize();
+            scene.add(light);
+
+            const loader = new THREE.OBJLoader();
+            loader.load("{url}", function(object) {{
+                scene.add(object);
+            }});
+
+            camera.position.z = 5;
+
+            function animate() {{
+                requestAnimationFrame(animate);
+                controls.update();
+                renderer.render(scene, camera);
+            }}
+            animate();
+        </script>
+    </body>
+    </html>
+    """, height=500)
+
+# ===============================
+# SESSION
+# ===============================
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+# ===============================
+# AUTH
+# ===============================
 if not st.session_state.user:
-    email = st.sidebar.text_input("Email")
-    password = st.sidebar.text_input("Password", type="password")
+    tab1, tab2 = st.tabs(["Login", "Register"])
 
-    col1, col2 = st.sidebar.columns(2)
+    with tab1:
+        st.subheader("Login")
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
 
-    # SIGNUP
-    if col1.button("Signup"):
-        try:
-            c.execute("INSERT INTO users (email, password) VALUES (?, ?)",
-                      (email, hash_password(password)))
-            conn.commit()
-            st.sidebar.success("Account created! Login now.")
-        except:
-            st.sidebar.error("User already exists")
+        if st.button("Login"):
+            c.execute("SELECT * FROM users WHERE username=? AND password=?",
+                      (username, hash_password(password)))
+            user = c.fetchone()
+            if user:
+                st.session_state.user = username
+                st.success("Logged in!")
+                st.rerun()
+            else:
+                st.error("Invalid credentials")
 
-    # LOGIN
-    if col2.button("Login"):
-        user = c.execute(
-            "SELECT * FROM users WHERE email=? AND password=?",
-            (email, hash_password(password))
-        ).fetchone()
+    with tab2:
+        st.subheader("Register")
+        new_user = st.text_input("Username")
+        new_email = st.text_input("Email")
+        new_pass = st.text_input("Password", type="password")
 
-        if user:
-            st.session_state.user = user
-            st.rerun()
-        else:
-            st.sidebar.error("Invalid credentials")
+        if st.button("Register"):
+            try:
+                c.execute("INSERT INTO users(username,email,password) VALUES(?,?,?)",
+                          (new_user, new_email, hash_password(new_pass)))
+                conn.commit()
+                st.success("Account created! Login now.")
+            except:
+                st.error("Username or email already exists")
 
 else:
-    st.sidebar.success(f"Logged in as {st.session_state.user[1]}")
-    if st.sidebar.button("Logout"):
+    st.sidebar.title(f"👋 {st.session_state.user}")
+    page = st.sidebar.radio("Navigation", 
+                            ["Explore", "Upload", "Leaderboard", "Logout"])
+
+    # ===============================
+    # EXPLORE
+    # ===============================
+    if page == "Explore":
+        st.title("🔥 Trending Models")
+
+        c.execute("SELECT * FROM models")
+        models = c.fetchall()
+
+        models = sorted(
+            models,
+            key=lambda x: trending_score(x[6], x[7], x[8]),
+            reverse=True
+        )
+
+        repo = st.secrets["GITHUB_REPO"]
+
+        for model in models:
+            st.markdown("---")
+            st.subheader(model[2])
+            st.write(f"By: {model[1]}")
+            st.write(model[4])
+
+            model_url = f"https://raw.githubusercontent.com/{repo}/main/models/{model[5]}"
+            show_3d_model(model_url)
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                if st.button(f"❤️ Like {model[0]}"):
+                    c.execute("UPDATE models SET likes = likes + 1 WHERE id=?",
+                              (model[0],))
+                    conn.commit()
+                    st.rerun()
+
+            with col2:
+                st.write(f"❤️ {model[6]}   👁 {model[7]}")
+
+            c.execute("UPDATE models SET views = views + 1 WHERE id=?",
+                      (model[0],))
+            conn.commit()
+
+    # ===============================
+    # UPLOAD
+    # ===============================
+    elif page == "Upload":
+        st.title("🚀 Upload 3D Model (.obj only)")
+
+        title = st.text_input("Model Title")
+        prompt = st.text_area("Prompt Used")
+        description = st.text_area("Description")
+        uploaded_file = st.file_uploader("Upload OBJ file", type=["obj"])
+
+        if st.button("Submit"):
+            if uploaded_file:
+                success = upload_to_github(uploaded_file, uploaded_file.name)
+
+                if success:
+                    c.execute("""
+                    INSERT INTO models
+                    (username,title,prompt,description,filename,created_at)
+                    VALUES(?,?,?,?,?,?)
+                    """,
+                    (
+                        st.session_state.user,
+                        title,
+                        prompt,
+                        description,
+                        uploaded_file.name,
+                        datetime.datetime.now().isoformat()
+                    ))
+                    conn.commit()
+                    st.success("Model uploaded successfully!")
+                else:
+                    st.error("GitHub upload failed")
+
+    # ===============================
+    # LEADERBOARD
+    # ===============================
+    elif page == "Leaderboard":
+        st.title("🏆 Top Creators")
+
+        c.execute("""
+        SELECT username, SUM(likes) as total_likes
+        FROM models
+        GROUP BY username
+        ORDER BY total_likes DESC
+        LIMIT 10
+        """)
+
+        leaders = c.fetchall()
+
+        for i, leader in enumerate(leaders):
+            st.write(f"{i+1}. {leader[0]} — ❤️ {leader[1] or 0}")
+
+    # ===============================
+    # LOGOUT
+    # ===============================
+    elif page == "Logout":
         st.session_state.user = None
         st.rerun()
-
-# =========================
-# NAVIGATION
-# =========================
-page = st.sidebar.radio("Navigate", ["Explore", "Upload"])
-
-# =========================
-# UPLOAD
-# =========================
-if page == "Upload":
-
-    if not st.session_state.user:
-        st.warning("Login required")
-        st.stop()
-
-    st.title("Upload 3D Model (.OBJ)")
-
-    title = st.text_input("Title")
-    prompt = st.text_area("Prompt Used")
-    description = st.text_area("Description")
-    uploaded_file = st.file_uploader("Upload OBJ", type=["obj"])
-
-    if st.button("Upload"):
-        if uploaded_file and title:
-
-            filepath = os.path.join(MODEL_DIR, uploaded_file.name)
-            with open(filepath, "wb") as f:
-                f.write(uploaded_file.read())
-
-            c.execute("""
-                INSERT INTO models (title, prompt, description, filename, user_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                title,
-                prompt,
-                description,
-                uploaded_file.name,
-                st.session_state.user[0],
-                datetime.now().isoformat()
-            ))
-
-            conn.commit()
-            st.success("Model Uploaded!")
-            st.rerun()
-
-# =========================
-# EXPLORE
-# =========================
-if page == "Explore":
-
-    st.title("Community Models")
-
-    models = c.execute("""
-        SELECT * FROM models ORDER BY id DESC
-    """).fetchall()
-
-    for model in models:
-
-        model_id, title, prompt, desc, filename, user_id, created = model
-
-        st.subheader(title)
-        st.write(desc)
-        st.caption(f"Uploaded on {created}")
-
-        # ================= 3D PREVIEW =================
-        filepath = os.path.join(MODEL_DIR, filename)
-
-        if os.path.exists(filepath):
-            with open(filepath, "rb") as f:
-                encoded = base64.b64encode(f.read()).decode()
-
-            st.components.v1.html(f"""
-            <script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
-            <script src="https://cdn.jsdelivr.net/npm/three@0.152.2/examples/js/loaders/OBJLoader.js"></script>
-            <div id="viewer{model_id}" style="height:400px;"></div>
-            <script>
-                const scene = new THREE.Scene();
-                const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-                const renderer = new THREE.WebGLRenderer();
-                renderer.setSize(window.innerWidth, 400);
-                document.getElementById("viewer{model_id}").appendChild(renderer.domElement);
-
-                const light = new THREE.DirectionalLight(0xffffff, 1);
-                scene.add(light);
-
-                const loader = new THREE.OBJLoader();
-                const objData = atob("{encoded}");
-                const blob = new Blob([objData], {{type: 'text/plain'}});
-                const url = URL.createObjectURL(blob);
-
-                loader.load(url, function (object) {{
-                    scene.add(object);
-                }});
-
-                camera.position.z = 5;
-                function animate() {{
-                    requestAnimationFrame(animate);
-                    renderer.render(scene, camera);
-                }}
-                animate();
-            </script>
-            """, height=420)
-
-        # ================= LIKES =================
-        like_count = c.execute(
-            "SELECT COUNT(*) FROM likes WHERE model_id=?",
-            (model_id,)
-        ).fetchone()[0]
-
-        col1, col2 = st.columns(2)
-
-        if st.session_state.user:
-            if col1.button(f"❤️ Like ({like_count})", key=f"like{model_id}"):
-                c.execute(
-                    "INSERT INTO likes (model_id, user_id) VALUES (?, ?)",
-                    (model_id, st.session_state.user[0])
-                )
-                conn.commit()
-                st.rerun()
-        else:
-            col1.write(f"❤️ {like_count}")
-
-        # ================= RATINGS =================
-        avg_rating = c.execute(
-            "SELECT AVG(rating) FROM ratings WHERE model_id=?",
-            (model_id,)
-        ).fetchone()[0]
-
-        if avg_rating:
-            col2.write(f"⭐ {round(avg_rating,1)}/5")
-        else:
-            col2.write("⭐ No ratings")
-
-        if st.session_state.user:
-            rating = st.slider(
-                "Rate this model",
-                1, 5,
-                key=f"rate{model_id}"
-            )
-            if st.button("Submit Rating", key=f"ratebtn{model_id}"):
-                c.execute(
-                    "INSERT INTO ratings (model_id, user_id, rating) VALUES (?, ?, ?)",
-                    (model_id, st.session_state.user[0], rating)
-                )
-                conn.commit()
-                st.rerun()
-
-        st.divider()
